@@ -17,7 +17,7 @@ func NewKeygenCommand(verbose *bool, configPath *string) *cobra.Command {
 	var (
 		keyPath string
 		force   bool
-		
+
 		keygenPath string
 	)
 
@@ -43,10 +43,10 @@ func runKeygen(verbose bool, configPath, keyPath string, force bool, keygenPath 
 	flagOverrides := map[string]interface{}{
 		"keyPath": keyPath,
 	}
-	
+
 	var logger *logrus.Logger
 	var finalKeyPath string
-	
+
 	cfg, err := config.LoadWithOverrides(configPath, flagOverrides)
 	if err != nil {
 		logger = logrus.New()
@@ -57,21 +57,21 @@ func runKeygen(verbose bool, configPath, keyPath string, force bool, keygenPath 
 	} else {
 		logger = logging.SetupLogger(verbose)
 	}
-	
+
 	finalKeyPath = keyPath
 	if finalKeyPath == "" && keygenPath != "" {
 		finalKeyPath = keygenPath
 	}
-	
+
 	if finalKeyPath == "" && cfg != nil {
 		finalKeyPath = cfg.KeyPath
 	}
-	
+
 	logger.WithField("path", finalKeyPath).Info("P0 SSH Agent Key Generator")
-	
+
 	privateKeyPath := filepath.Join(finalKeyPath, jwt.PrivateKeyFile)
 	publicKeyPath := filepath.Join(finalKeyPath, jwt.PublicKeyFile)
-	
+
 	if !force {
 		if _, err := os.Stat(privateKeyPath); err == nil {
 			logger.WithField("path", privateKeyPath).Error("Private key already exists")
@@ -80,33 +80,29 @@ func runKeygen(verbose bool, configPath, keyPath string, force bool, keygenPath 
 			return fmt.Errorf("keys already exist at %s", finalKeyPath)
 		}
 	}
-	
+
 	jwtManager := jwt.NewManager(logger)
-	
+
 	if err := jwtManager.GenerateKeyPair(finalKeyPath); err != nil {
 		logger.WithError(err).Error("Failed to generate keypair")
 		return err
 	}
-	
-	publicKey, err := os.ReadFile(publicKeyPath)
-	if err != nil {
+
+	if _, err := os.ReadFile(publicKeyPath); err != nil {
 		logger.WithError(err).Error("Failed to read generated public key")
 		return err
 	}
-	
+
 	fmt.Println("\n🔑 JWT Keypair Generated Successfully!")
 	fmt.Printf("📁 Location: %s\n", finalKeyPath)
 	fmt.Printf("🔒 Private Key: %s\n", privateKeyPath)
 	fmt.Printf("🔓 Public Key: %s\n", publicKeyPath)
-	fmt.Println("\n📋 Public Key for Registration:")
-	fmt.Println("=================================")
-	fmt.Print(string(publicKey))
+	fmt.Println("\n⚠️  IMPORTANT: Back up these keys! Losing them will require re-registration.")
 	fmt.Println("=================================")
 	fmt.Println("\n💡 Next Steps:")
-	fmt.Println("1. Register the public key above with your P0 backend")
-	fmt.Println("2. Keep the private key secure and backed up")
-	fmt.Printf("3. Run: p0-ssh-agent start --org-id YOUR_ORG --host-id YOUR_HOST --key-path %s\n", finalKeyPath)
-	fmt.Println("\n⚠️  IMPORTANT: Back up these keys! Losing them will require re-registration.")
-	
+	fmt.Println("1. Keep the private key secure and backed up")
+	fmt.Println("2. Register this device with your P0 backend, e.g.")
+	fmt.Println("   p0-ssh-agent register --auth=\"{API_KEY}\" --url=\"https://api.p0.app\"")
+
 	return nil
 }

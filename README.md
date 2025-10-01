@@ -143,8 +143,8 @@ Start the WebSocket proxy agent that connects to P0 backend.
 
 | Flag               | Description                               | Default |
 | ------------------ | ----------------------------------------- | ------- |
-| `--org-id`         | Organization identifier (required)        | -       |
-| `--host-id`        | Host identifier (required)                | -       |
+| `--org-id`         | Organization identifier                   | -       |
+| `--host-id`        | Host identifier                           | -       |
 | `--tunnel-host`    | WebSocket URL (e.g., ws://localhost:8079) | -       |
 | `--key-path`       | Path to store JWT key files               | -       |
 | `--labels`         | Machine labels for registration           | -       |
