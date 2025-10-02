@@ -41,9 +41,9 @@ and logs incoming requests for monitoring and debugging purposes.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&orgID, "org-id", "", "Organization identifier (required)")
-	cmd.Flags().StringVar(&hostID, "host-id", "", "Host identifier (required)")
-	cmd.Flags().StringVar(&tunnelHost, "tunnel-host", "", "WebSocket URL (e.g., ws://localhost:8079 or wss://example.ngrok.app)")
+	cmd.Flags().StringVar(&orgID, "org-id", "", "Organization identifier")
+	cmd.Flags().StringVar(&hostID, "host-id", "", "Host identifier")
+	cmd.Flags().StringVar(&tunnelHost, "tunnel-host", "", "WebSocket URL (e.g., ws://localhost:8079, wss://example.ngrok.app, wss://api.p0.app)")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to store JWT key files")
 	cmd.Flags().StringSliceVar(&labels, "labels", []string{}, "Machine labels for registration (can be used multiple times)")
 	cmd.Flags().StringVar(&environment, "environment", "", "Environment ID for registration")
