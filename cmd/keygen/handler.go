@@ -102,7 +102,7 @@ func runKeygen(verbose bool, configPath, keyPath string, force bool, keygenPath 
 	fmt.Println("\n💡 Next Steps:")
 	fmt.Println("1. Keep the private key secure and backed up")
 	fmt.Println("2. Register this device with your P0 backend, e.g.")
-	fmt.Println("   p0-ssh-agent register --auth=\"{API_KEY}\" --url=\"https://api.p0.app\"")
+	fmt.Println("   p0-ssh-agent register --auth=\"{API_KEY}\" --url=\"https://api.p0.app/o/{org}/integrations/self-hosted/{environment}/computers/register\"")
 
 	return nil
 }
