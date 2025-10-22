@@ -2,6 +2,8 @@
 
 A comprehensive SSH access management tool for on-premises nodes that connects to P0 backend infrastructure via WebSocket, executes provisioning scripts, and provides secure authentication using JWT tokens with ECDSA P-384 keys.
 
+⚠️ **Warning**: This feature is currently experimental and subject to change.
+
 ## Features
 
 - **JWT Authentication**: ES384 algorithm with ECDSA P-384 private keys
