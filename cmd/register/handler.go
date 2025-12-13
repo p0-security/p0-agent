@@ -20,12 +20,13 @@ import (
 
 func NewRegisterCommand(verbose *bool, configPath *string) *cobra.Command {
 	var (
-		auth        string
-		url         string
-		hostname    string
-		labels      []string
-		serviceName string
-		allowRoot   bool
+		auth             string
+		url              string
+		hostname         string
+		labels           []string
+		serviceName      string
+		allowRoot        bool
+		breakGlassUsers  []string
 	)
 
 	cmd := &cobra.Command{
@@ -47,15 +48,20 @@ Usage:
 Examples:
   # Basic registration
   p0 register --auth "token123" --url "https://p0.dev/o/myorg/integrations/..."
-  
+
   # With custom hostname and labels
   p0 register --auth "token123" --url "https://p0.dev/o/myorg/integrations/..." \
     --hostname "web-server-01" \
     --label "env=production" \
     --label "team=backend" \
-    --label "region=us-west-2"`,
+    --label "region=us-west-2"
+
+  # With break-glass users for out-of-band access
+  p0 register --auth "token123" --url "https://p0.dev/o/myorg/integrations/..." \
+    --break-glass-user "admin" \
+    --break-glass-user "backup-admin"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRegister(*verbose, auth, url, hostname, labels, serviceName, allowRoot)
+			return runRegister(*verbose, auth, url, hostname, labels, serviceName, allowRoot, breakGlassUsers)
 		},
 	}
 
@@ -65,6 +71,7 @@ Examples:
 	cmd.Flags().StringSliceVar(&labels, "label", []string{}, "Machine labels in key=value format (can be used multiple times)")
 	cmd.Flags().StringVar(&serviceName, "service-name", "p0-ssh-agent", "Name for the systemd service")
 	cmd.Flags().BoolVar(&allowRoot, "allow-root", false, "Allow installation to run as root")
+	cmd.Flags().StringSliceVar(&breakGlassUsers, "break-glass-user", []string{}, "Username for break-glass SSH access (can be used multiple times, will generate or retrieve SSH key)")
 
 	cmd.MarkFlagRequired("auth")
 	cmd.MarkFlagRequired("url")
@@ -81,7 +88,7 @@ type RegistrationResponse struct {
 	TunnelHost    string `json:"tunnelHost"`
 }
 
-func runRegister(verbose bool, auth, url, hostname string, labels []string, serviceName string, allowRoot bool) error {
+func runRegister(verbose bool, auth, url, hostname string, labels []string, serviceName string, allowRoot bool, breakGlassUsers []string) error {
 	logger := logrus.New()
 	if verbose {
 		logger.SetLevel(logrus.DebugLevel)
@@ -108,7 +115,7 @@ func runRegister(verbose bool, auth, url, hostname string, labels []string, serv
 
 	// Step 2: Send registration request to P0 backend
 	logger.Info("🔗 Step 2: Registering with P0 backend...")
-	response, err := sendRegistrationRequest(auth, url, hostname, labels, logger)
+	response, err := sendRegistrationRequest(auth, url, hostname, labels, breakGlassUsers, logger)
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
@@ -133,7 +140,183 @@ func runRegister(verbose bool, auth, url, hostname string, labels []string, serv
 	return nil
 }
 
-func sendRegistrationRequest(auth, url, hostname string, labels []string, logger *logrus.Logger) (*RegistrationResponse, error) {
+type SSHKeyPair struct {
+	PrivateKey string
+	PublicKey  string
+}
+
+func getOrGenerateSSHKeyForUser(userName string, logger *logrus.Logger) (*SSHKeyPair, error) {
+	// Use dedicated P0 SSH key for break-glass access
+	homeDir := "/home/" + userName
+	if userName == "root" {
+		homeDir = "/root"
+	}
+
+	sshDir := filepath.Join(homeDir, ".ssh")
+	sshKeyPath := filepath.Join(sshDir, "p0_id_rsa")
+	sshPubKeyPath := sshKeyPath + ".pub"
+
+	// Check if P0 SSH key already exists
+	privateKeyData, err := os.ReadFile(sshKeyPath)
+	publicKeyData, pubErr := os.ReadFile(sshPubKeyPath)
+
+	if err == nil && pubErr == nil {
+		logger.WithFields(logrus.Fields{
+			"userName": userName,
+			"keyPath":  sshKeyPath,
+		}).Info("🔑 Using existing P0 SSH key for break-glass user")
+		return &SSHKeyPair{
+			PrivateKey: string(privateKeyData),
+			PublicKey:  string(publicKeyData),
+		}, nil
+	}
+
+	// Generate new P0 SSH key pair
+	logger.WithFields(logrus.Fields{
+		"userName": userName,
+		"keyPath":  sshKeyPath,
+	}).Info("🔑 Generating new P0 SSH key pair for break-glass user")
+
+	// Create .ssh directory if it doesn't exist
+	cmd := exec.Command("sudo", "mkdir", "-p", sshDir)
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to create .ssh directory: %w", err)
+	}
+
+	// Generate SSH key pair using ssh-keygen
+	cmd = exec.Command("sudo", "ssh-keygen", "-t", "rsa", "-b", "4096", "-f", sshKeyPath, "-N", "", "-C", "p0-break-glass-"+userName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate SSH key: %w (output: %s)", err, string(output))
+	}
+
+	// Set proper ownership for the keys
+	cmd = exec.Command("sudo", "chown", userName+":"+userName, sshKeyPath)
+	if err := cmd.Run(); err != nil {
+		logger.WithError(err).Warn("Failed to set ownership for private key")
+	}
+
+	cmd = exec.Command("sudo", "chown", userName+":"+userName, sshPubKeyPath)
+	if err := cmd.Run(); err != nil {
+		logger.WithError(err).Warn("Failed to set ownership for public key")
+	}
+
+	// Set proper permissions
+	cmd = exec.Command("sudo", "chmod", "600", sshKeyPath)
+	if err := cmd.Run(); err != nil {
+		logger.WithError(err).Warn("Failed to set permissions for private key")
+	}
+
+	cmd = exec.Command("sudo", "chmod", "644", sshPubKeyPath)
+	if err := cmd.Run(); err != nil {
+		logger.WithError(err).Warn("Failed to set permissions for public key")
+	}
+
+	// Read the generated keys
+	privateKeyData, err = os.ReadFile(sshKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read generated SSH private key: %w", err)
+	}
+
+	publicKeyData, err = os.ReadFile(sshPubKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read generated SSH public key: %w", err)
+	}
+
+	logger.WithField("userName", userName).Info("✅ Successfully generated P0 SSH key pair for break-glass user")
+	return &SSHKeyPair{
+		PrivateKey: string(privateKeyData),
+		PublicKey:  string(publicKeyData),
+	}, nil
+}
+
+func userExists(userName string) bool {
+	cmd := exec.Command("id", "-u", userName)
+	err := cmd.Run()
+	return err == nil
+}
+
+func addPublicKeyToAuthorizedKeys(userName, publicKey string, logger *logrus.Logger) error {
+	homeDir := "/home/" + userName
+	if userName == "root" {
+		homeDir = "/root"
+	}
+
+	authorizedKeysPath := filepath.Join(homeDir, ".ssh", "authorized_keys")
+	logger.WithFields(logrus.Fields{
+		"userName":           userName,
+		"authorizedKeysPath": authorizedKeysPath,
+	}).Debug("Adding public key to authorized_keys")
+
+	// Create a temporary file with the public key
+	tmpFile, err := os.CreateTemp("", "authorized_keys_*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpFileName := tmpFile.Name()
+	defer os.Remove(tmpFileName)
+
+	// Write the public key to the temp file
+	if _, err := tmpFile.WriteString(publicKey + "\n"); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write public key to temp file: %w", err)
+	}
+	tmpFile.Close()
+
+	// Append to authorized_keys using sudo
+	cmd := exec.Command("sudo", "bash", "-c", fmt.Sprintf("cat %s >> %s", tmpFileName, authorizedKeysPath))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to append to authorized_keys: %w (output: %s)", err, string(output))
+	}
+
+	// Set proper ownership
+	cmd = exec.Command("sudo", "chown", userName+":"+userName, authorizedKeysPath)
+	if err := cmd.Run(); err != nil {
+		logger.WithError(err).Warn("Failed to set ownership for authorized_keys")
+	}
+
+	// Set proper permissions
+	cmd = exec.Command("sudo", "chmod", "600", authorizedKeysPath)
+	if err := cmd.Run(); err != nil {
+		logger.WithError(err).Warn("Failed to set permissions for authorized_keys")
+	}
+
+	logger.WithField("userName", userName).Info("✅ Added P0 public key to authorized_keys")
+	return nil
+}
+
+func deleteSSHKeyPair(userName string, logger *logrus.Logger) error {
+	homeDir := "/home/" + userName
+	if userName == "root" {
+		homeDir = "/root"
+	}
+
+	sshKeyPath := filepath.Join(homeDir, ".ssh", "p0_id_rsa")
+	sshPubKeyPath := sshKeyPath + ".pub"
+
+	logger.WithFields(logrus.Fields{
+		"userName":      userName,
+		"privateKeyPath": sshKeyPath,
+		"publicKeyPath":  sshPubKeyPath,
+	}).Debug("Deleting P0 SSH key pair")
+
+	// Delete private key
+	cmd := exec.Command("sudo", "rm", "-f", sshKeyPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to delete private key: %w (output: %s)", err, string(output))
+	}
+
+	// Delete public key
+	cmd = exec.Command("sudo", "rm", "-f", sshPubKeyPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to delete public key: %w (output: %s)", err, string(output))
+	}
+
+	logger.WithField("userName", userName).Info("🗑️  Deleted P0 SSH key pair after successful registration")
+	return nil
+}
+
+func sendRegistrationRequest(auth, url, hostname string, labels []string, breakGlassUsers []string, logger *logrus.Logger) (*RegistrationResponse, error) {
 	// Generate the registration request using the key path
 	keyPath := "/etc/p0-ssh-agent/keys"
 	encodedRequest, err := utils.GenerateRegistrationRequestCodeWithOptions(keyPath, hostname, labels, logger)
@@ -146,10 +329,75 @@ func sendRegistrationRequest(auth, url, hostname string, labels []string, logger
 		"auth": auth[:8] + "...", // Log only first 8 chars for security
 	}).Debug("Sending registration request")
 
-	// Wrap the encoded request in a JSON object
-	requestBody := map[string]string{
+	// Build request body with key
+	requestBody := map[string]interface{}{
 		"key": encodedRequest,
 	}
+
+	// If break-glass users are provided, add credentials
+	usersToCleanup := []string{} // Track users whose key files need cleanup
+	if len(breakGlassUsers) > 0 {
+		logger.WithFields(logrus.Fields{
+			"userCount": len(breakGlassUsers),
+			"users":     breakGlassUsers,
+		}).Info("🔐 Validating and retrieving SSH keys for break-glass access")
+
+		// Validate that all users exist on the system
+		validUsers := []string{}
+		for _, userName := range breakGlassUsers {
+			if !userExists(userName) {
+				logger.WithField("userName", userName).Warn("⚠️  Break-glass user does not exist on system, skipping")
+				continue
+			}
+			validUsers = append(validUsers, userName)
+		}
+
+		if len(validUsers) == 0 {
+			logger.Warn("No valid break-glass users found, continuing registration without break-glass access")
+		} else {
+			breakGlassUserCredentials := make(map[string]map[string]string)
+
+			for _, userName := range validUsers {
+				logger.WithField("userName", userName).Debug("Processing break-glass user")
+				keyPair, err := getOrGenerateSSHKeyForUser(userName, logger)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get SSH key for break-glass user '%s': %w", userName, err)
+				}
+
+				// Add this user to cleanup list immediately after key generation
+				usersToCleanup = append(usersToCleanup, userName)
+
+				// Add public key to authorized_keys immediately after generation
+				if err := addPublicKeyToAuthorizedKeys(userName, keyPair.PublicKey, logger); err != nil {
+					return nil, fmt.Errorf("failed to add public key to authorized_keys for '%s': %w", userName, err)
+				}
+
+				breakGlassUserCredentials[userName] = map[string]string{
+					"publicKey":  keyPair.PublicKey,
+					"privateKey": keyPair.PrivateKey,
+				}
+			}
+
+			requestBody["breakGlassUserCredentials"] = breakGlassUserCredentials
+			logger.WithField("userCount", len(validUsers)).Info("✅ Break-glass credentials added to registration request")
+		}
+	}
+
+	// Setup deferred cleanup - will run regardless of success or failure
+	defer func() {
+		if len(usersToCleanup) > 0 {
+			logger.WithField("userCount", len(usersToCleanup)).Info("🧹 Cleaning up: Deleting temporary key pair files")
+
+			for _, userName := range usersToCleanup {
+				if err := deleteSSHKeyPair(userName, logger); err != nil {
+					logger.WithError(err).WithField("userName", userName).Warn("Failed to delete SSH key pair (non-fatal)")
+					// Continue with other users even if one fails - this is just cleanup
+				}
+			}
+
+			logger.Info("✅ Break-glass key cleanup completed")
+		}
+	}()
 
 	requestJSON, err := json.Marshal(requestBody)
 	if err != nil {

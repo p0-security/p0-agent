@@ -89,10 +89,28 @@ environmentId: "production" # Environment identifier
 
 #### 3. Register with Backend
 
-Generate a registration request:
+Register machine with automatic installation:
 
 ```bash
-p0-ssh-agent register --config config.yaml
+# Basic registration
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register"
+
+# With custom hostname and labels
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register" \
+  --hostname "web-server-01" \
+  --label "env=production" \
+  --label "team=backend"
+
+# With break-glass users for out-of-band access
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register" \
+  --break-glass-user "admin" \
+  --break-glass-user "backup-admin"
 ```
 
 #### 4. Start the Agent
@@ -163,13 +181,25 @@ Generate ECDSA P-384 keypair for JWT authentication.
 | `--key-path` | Directory to store key files | `.`     |
 | `--force`    | Overwrite existing keys      | `false` |
 
-### `register` - Generate Registration Request
+### `register` - Register and Install P0 SSH Agent
 
-Generate machine registration request for P0 backend.
+Register machine with P0 backend using automatic registration. This command performs installation, generates JWT keys, registers with the backend, and configures the systemd service.
 
-| Flag       | Description                  | Default |
-| ---------- | ---------------------------- | ------- |
-| `--output` | Output format (json or yaml) | `json`  |
+| Flag                  | Description                                                          | Default           | Required |
+| --------------------- | -------------------------------------------------------------------- | ----------------- | -------- |
+| `--auth`              | Bearer token for authentication                                      | -                 | Yes      |
+| `--url`               | Registration URL from P0 backend                                     | -                 | Yes      |
+| `--hostname`          | Override machine hostname                                            | System hostname   | No       |
+| `--label`             | Machine labels in key=value format (can be used multiple times)      | -                 | No       |
+| `--service-name`      | Name for the systemd service                                         | `p0-ssh-agent`    | No       |
+| `--allow-root`        | Allow installation to run as root                                    | `false`           | No       |
+| `--break-glass-user`  | Username for break-glass SSH access (can be used multiple times)     | -                 | No       |
+
+**Break-glass users:**
+- Users must already exist on the system before registration
+- Non-existent users will be skipped with a warning
+- P0-specific SSH keys (`p0_id_rsa`) will be generated or reused in `~/.ssh/`
+- Public keys are stored in the backend, private keys are encrypted
 
 ### `status` - Check Installation Status
 
@@ -211,7 +241,41 @@ Execute provisioning scripts directly for testing and validation.
 
 ### On-Premises Node Setup
 
-**Manual setup (recommended):**
+**Method 1: Automatic Registration (Recommended):**
+
+```bash
+# One-step registration with automatic installation
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register"
+
+# With machine labels
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register" \
+  --hostname "prod-web-01" \
+  --label "environment=production" \
+  --label "team=infrastructure" \
+  --label "region=us-west-2"
+
+# With break-glass access for emergency out-of-band SSH
+# Note: Users must already exist on the system
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register" \
+  --break-glass-user "admin" \
+  --break-glass-user "emergency"
+
+# The register command will:
+# - Install the binary and service files
+# - Generate JWT keys
+# - Register with P0 backend
+# - Save configuration file
+# - Configure systemd service
+# - Generate P0 SSH keys for break-glass users (if specified)
+```
+
+**Method 2: Manual Setup (Advanced):**
 
 ```bash
 # 1. Generate JWT keys
@@ -228,10 +292,7 @@ environmentId: "production"
 tunnelTimeoutMs: 30000
 EOF
 
-# 3. Generate registration request
-p0-ssh-agent register --config config.yaml
-
-# 4. Start the agent
+# 3. Start the agent
 p0-ssh-agent start --config config.yaml --verbose
 ```
 
@@ -290,7 +351,26 @@ p0-ssh-agent command \
 
 ### Production On-Premises Deployment
 
-**Manual setup approach:**
+**Automatic registration approach (recommended):**
+
+```bash
+# Download the binary
+wget https://releases.p0.com/p0-ssh-agent/latest/p0-ssh-agent-linux-amd64
+chmod +x p0-ssh-agent-linux-amd64
+sudo mv p0-ssh-agent-linux-amd64 /usr/local/bin/p0-ssh-agent
+
+# Register with P0 backend (performs installation and setup)
+p0-ssh-agent register \
+  --auth "your-bearer-token" \
+  --url "https://p0.dev/o/your-org/integrations/self-hosted/computers/your-env/register" \
+  --break-glass-user "admin"
+
+# Service is automatically started after registration
+# Check status with:
+sudo systemctl status p0-ssh-agent
+```
+
+**Manual setup approach (advanced):**
 
 ```bash
 # 1. Generate JWT keys
@@ -299,10 +379,7 @@ p0-ssh-agent keygen --key-path ~/.p0/keys
 # 2. Create configuration file
 vi config.yaml
 
-# 3. Generate registration request
-p0-ssh-agent register --config config.yaml
-
-# 4. Start the agent
+# 3. Start the agent
 p0-ssh-agent start --config config.yaml
 ```
 
