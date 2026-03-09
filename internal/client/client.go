@@ -273,7 +273,7 @@ func (c *Client) handleCallMethod(ctx context.Context, params json.RawMessage) (
 	}
 
 	if scriptResult.Success {
-		response.Data = map[string]interface{}{
+		data := map[string]interface{}{
 			"success":   true,
 			"message":   scriptResult.Message,
 			"client_id": c.config.GetClientID(),
@@ -281,6 +281,10 @@ func (c *Client) handleCallMethod(ctx context.Context, params json.RawMessage) (
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"status":    "completed",
 		}
+		if scriptResult.Output != "" {
+			data["output"] = scriptResult.Output
+		}
+		response.Data = data
 		c.logger.WithFields(logrus.Fields{
 			"command": command,
 			"message": scriptResult.Message,

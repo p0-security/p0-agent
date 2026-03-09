@@ -13,6 +13,7 @@ type ProvisioningResult struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Error   string `json:"error,omitempty"`
+	Output  string `json:"output,omitempty"`
 }
 
 type Command string
@@ -23,4 +24,5 @@ const (
 	CommandProvisionCAKeys         Command = "provisionCAKeys"
 	CommandProvisionSudo           Command = "provisionSudo"
 	CommandProvisionSession        Command = "provisionSession"
+	CommandRunAudit                Command = "runAudit"
 )

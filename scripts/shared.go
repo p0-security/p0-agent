@@ -207,6 +207,8 @@ func ExecuteScript(command string, data interface{}, dryRun bool, logger *logrus
 	}
 
 	switch Command(command) {
+	case CommandRunAudit:
+		return RunAudit(logger)
 	case CommandProvisionUser:
 		return ProvisionUser(req, logger)
 	case CommandProvisionAuthorizedKeys:
