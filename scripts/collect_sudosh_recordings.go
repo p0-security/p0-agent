@@ -3,9 +3,13 @@ package scripts
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -14,6 +18,24 @@ import (
 const (
 	recordingsCollectionTimeout = 2 * time.Minute
 )
+
+type auditEventRow struct {
+	ID        string      `json:"id"`
+	Timestamp string      `json:"timestamp"`
+	Action    string      `json:"action,omitempty"`
+	Actor     string      `json:"actor,omitempty"`
+	Target    string      `json:"target,omitempty"`
+	Summary   string      `json:"summary"`
+	Details   interface{} `json:"details,omitempty"`
+	Severity  string      `json:"severity,omitempty"`
+	Raw       interface{} `json:"raw,omitempty"`
+}
+
+type sudoshExportSession struct {
+	sessionID   string
+	scriptLines []string
+	timingLines []string
+}
 
 const collectSudoshRecordingsScript = `#!/bin/bash
 set -e
@@ -183,9 +205,236 @@ func CollectSudoshRecordings(req ProvisioningRequest, logger *logrus.Logger) Pro
 	}
 
 	logger.WithField("username", req.UserName).Info("Sudosh recordings collected successfully")
+
+	augmentedOutput, err := appendAuditEventsToSudoshExport(stdout.String(), req.UserName)
+	if err != nil {
+		logger.WithError(err).Warn("Failed to derive audit events from sudosh export; returning playback payload only")
+		augmentedOutput = stdout.String()
+	}
+
 	return ProvisioningResult{
 		Success: true,
 		Message: "Sudosh recordings collected successfully",
-		Output:  stdout.String(),
+		Output:  augmentedOutput,
 	}
+}
+
+func appendAuditEventsToSudoshExport(output, username string) (string, error) {
+	lines := strings.Split(output, "\n")
+	var rebuilt []string
+
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
+		if line != "=== SESSION_START ===" {
+			rebuilt = append(rebuilt, line)
+			continue
+		}
+
+		session, nextIndex, err := parseSudoshSessionBlock(lines, index)
+		if err != nil {
+			return "", err
+		}
+
+		events, err := deriveAuditEvents(session, username)
+		if err != nil {
+			return "", err
+		}
+
+		eventsJSON, err := json.Marshal(events)
+		if err != nil {
+			return "", fmt.Errorf("marshal audit events for %s: %w", session.sessionID, err)
+		}
+
+		rebuilt = append(rebuilt, "=== SESSION_START ===")
+		rebuilt = append(rebuilt, fmt.Sprintf("SESSION_ID: %s", session.sessionID))
+		rebuilt = append(rebuilt, "SCRIPT_BASE64:")
+		rebuilt = append(rebuilt, session.scriptLines...)
+		rebuilt = append(rebuilt, "TIMING_BASE64:")
+		rebuilt = append(rebuilt, session.timingLines...)
+		rebuilt = append(rebuilt, "AUDIT_EVENTS_JSON:")
+		rebuilt = append(rebuilt, string(eventsJSON))
+		rebuilt = append(rebuilt, "=== SESSION_END ===")
+
+		index = nextIndex
+	}
+
+	return strings.Join(rebuilt, "\n"), nil
+}
+
+func parseSudoshSessionBlock(lines []string, start int) (sudoshExportSession, int, error) {
+	session := sudoshExportSession{}
+	state := ""
+
+	for index := start + 1; index < len(lines); index++ {
+		line := lines[index]
+
+		switch {
+		case strings.HasPrefix(line, "SESSION_ID: "):
+			session.sessionID = strings.TrimPrefix(line, "SESSION_ID: ")
+		case line == "SCRIPT_BASE64:":
+			state = "script"
+		case line == "TIMING_BASE64:":
+			state = "timing"
+		case line == "=== SESSION_END ===":
+			if session.sessionID == "" {
+				return sudoshExportSession{}, 0, fmt.Errorf("missing SESSION_ID in sudosh export")
+			}
+			return session, index, nil
+		default:
+			switch state {
+			case "script":
+				if line != "" {
+					session.scriptLines = append(session.scriptLines, line)
+				}
+			case "timing":
+				if line != "" {
+					session.timingLines = append(session.timingLines, line)
+				}
+			}
+		}
+	}
+
+	return sudoshExportSession{}, 0, fmt.Errorf("unterminated session block in sudosh export")
+}
+
+func deriveAuditEvents(session sudoshExportSession, username string) ([]auditEventRow, error) {
+	scriptBytes, err := base64.StdEncoding.DecodeString(strings.Join(session.scriptLines, ""))
+	if err != nil {
+		return nil, fmt.Errorf("decode script for %s: %w", session.sessionID, err)
+	}
+
+	timingBytes, err := base64.StdEncoding.DecodeString(strings.Join(session.timingLines, ""))
+	if err != nil {
+		return nil, fmt.Errorf("decode timing for %s: %w", session.sessionID, err)
+	}
+
+	startTime := parseSessionStartTime(session.sessionID)
+	duration := parseSessionDuration(string(timingBytes))
+	endTime := startTime.Add(duration)
+
+	var events []auditEventRow
+	events = append(events, auditEventRow{
+		ID:        fmt.Sprintf("%s-start", session.sessionID),
+		Timestamp: startTime.Format(time.RFC3339),
+		Action:    "session.started",
+		Actor:     username,
+		Target:    session.sessionID,
+		Summary:   "SSH session recording started",
+		Details: map[string]interface{}{
+			"sessionId": session.sessionID,
+		},
+		Severity: "info",
+		Raw: map[string]interface{}{
+			"sessionId": session.sessionID,
+		},
+	})
+
+	commandLines := extractCommandLines(string(scriptBytes))
+	commandCount := len(commandLines)
+	for index, commandLine := range commandLines {
+		commandTimestamp := startTime
+		if duration > 0 && commandCount > 0 {
+			offset := time.Duration(float64(duration) * float64(index+1) / float64(commandCount+1))
+			commandTimestamp = startTime.Add(offset)
+		}
+
+		events = append(events, auditEventRow{
+			ID:        fmt.Sprintf("%s-command-%d", session.sessionID, index),
+			Timestamp: commandTimestamp.Format(time.RFC3339),
+			Action:    "terminal.command",
+			Actor:     username,
+			Target:    session.sessionID,
+			Summary:   fmt.Sprintf("Command executed: %s", commandLine),
+			Details: map[string]interface{}{
+				"command":   commandLine,
+				"sessionId": session.sessionID,
+				"index":     index,
+			},
+			Severity: "info",
+			Raw: map[string]interface{}{
+				"line": commandLine,
+			},
+		})
+	}
+
+	events = append(events, auditEventRow{
+		ID:        fmt.Sprintf("%s-end", session.sessionID),
+		Timestamp: endTime.Format(time.RFC3339),
+		Action:    "session.ended",
+		Actor:     username,
+		Target:    session.sessionID,
+		Summary:   "SSH session recording ended",
+		Details: map[string]interface{}{
+			"sessionId":       session.sessionID,
+			"durationSeconds": duration.Seconds(),
+		},
+		Severity: "info",
+		Raw: map[string]interface{}{
+			"sessionId": session.sessionID,
+		},
+	})
+
+	return events, nil
+}
+
+func parseSessionStartTime(sessionID string) time.Time {
+	marker := strings.LastIndex(sessionID, "-script-")
+	if marker == -1 {
+		return time.Now().UTC()
+	}
+
+	suffix := sessionID[marker+len("-script-"):]
+	timestampToken := strings.SplitN(suffix, "-", 2)[0]
+	seconds, err := strconv.ParseInt(timestampToken, 10, 64)
+	if err != nil {
+		return time.Now().UTC()
+	}
+
+	return time.Unix(seconds, 0).UTC()
+}
+
+func parseSessionDuration(timingOutput string) time.Duration {
+	var totalSeconds float64
+	for _, line := range strings.Split(timingOutput, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		delaySeconds, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			continue
+		}
+		totalSeconds += delaySeconds
+	}
+
+	return time.Duration(totalSeconds * float64(time.Second))
+}
+
+func extractCommandLines(scriptOutput string) []string {
+	var commands []string
+
+	for _, line := range strings.Split(strings.ReplaceAll(scriptOutput, "\r", ""), "\n") {
+		cleanedLine := strings.TrimSpace(line)
+		if cleanedLine == "" {
+			continue
+		}
+
+		if marker := strings.LastIndex(cleanedLine, "$ "); marker != -1 {
+			command := strings.TrimSpace(cleanedLine[marker+2:])
+			if command != "" {
+				commands = append(commands, command)
+			}
+			continue
+		}
+
+		if marker := strings.LastIndex(cleanedLine, "# "); marker != -1 {
+			command := strings.TrimSpace(cleanedLine[marker+2:])
+			if command != "" {
+				commands = append(commands, command)
+			}
+		}
+	}
+
+	return commands
 }
