@@ -8,12 +8,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
+
+var validTimestampPattern = regexp.MustCompile(`^[0-9]+$`)
+var validISO8601Pattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`)
+
+func isValidTimestamp(ts string) bool {
+	if ts == "" {
+		return true
+	}
+	return validTimestampPattern.MatchString(ts) || validISO8601Pattern.MatchString(ts)
+}
 
 const (
 	recordingsCollectionTimeout = 2 * time.Minute
@@ -170,6 +181,20 @@ func CollectSudoshRecordings(req ProvisioningRequest, logger *logrus.Logger) Pro
 		}
 	}
 
+	if !isValidTimestamp(req.StartTime) {
+		return ProvisioningResult{
+			Success: false,
+			Error:   fmt.Sprintf("invalid startTime format %q: must be a unix timestamp or ISO 8601 (e.g. 2024-01-01T00:00:00Z)", req.StartTime),
+		}
+	}
+
+	if !isValidTimestamp(req.EndTime) {
+		return ProvisioningResult{
+			Success: false,
+			Error:   fmt.Sprintf("invalid endTime format %q: must be a unix timestamp or ISO 8601 (e.g. 2024-01-01T00:00:00Z)", req.EndTime),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), recordingsCollectionTimeout)
 	defer cancel()
 
@@ -308,7 +333,10 @@ func deriveAuditEvents(session sudoshExportSession, username string) ([]auditEve
 		return nil, fmt.Errorf("decode timing for %s: %w", session.sessionID, err)
 	}
 
-	startTime := parseSessionStartTime(session.sessionID)
+	startTime, err := parseSessionStartTime(session.sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("parse start time for %s: %w", session.sessionID, err)
+	}
 	duration := parseSessionDuration(string(timingBytes))
 	endTime := startTime.Add(duration)
 
@@ -377,20 +405,20 @@ func deriveAuditEvents(session sudoshExportSession, username string) ([]auditEve
 	return events, nil
 }
 
-func parseSessionStartTime(sessionID string) time.Time {
+func parseSessionStartTime(sessionID string) (time.Time, error) {
 	marker := strings.LastIndex(sessionID, "-script-")
 	if marker == -1 {
-		return time.Now().UTC()
+		return time.Time{}, fmt.Errorf("session ID %q missing -script- marker", sessionID)
 	}
 
 	suffix := sessionID[marker+len("-script-"):]
 	timestampToken := strings.SplitN(suffix, "-", 2)[0]
 	seconds, err := strconv.ParseInt(timestampToken, 10, 64)
 	if err != nil {
-		return time.Now().UTC()
+		return time.Time{}, fmt.Errorf("parse timestamp from session ID %q: %w", sessionID, err)
 	}
 
-	return time.Unix(seconds, 0).UTC()
+	return time.Unix(seconds, 0).UTC(), nil
 }
 
 func parseSessionDuration(timingOutput string) time.Duration {
