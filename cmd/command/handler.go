@@ -18,6 +18,8 @@ func NewCommandCommand(verbose *bool, configPath *string) *cobra.Command {
 		action    string
 		requestID string
 		publicKey string
+		startTime string
+		endTime   string
 		sudo      bool
 		dryRun    bool
 	)
@@ -31,7 +33,7 @@ without needing a full P0 backend connection.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCommand(
 				*verbose, *configPath,
-				command, userName, action, requestID, publicKey, sudo, dryRun,
+				command, userName, action, requestID, publicKey, startTime, endTime, sudo, dryRun,
 			)
 		},
 	}
@@ -41,6 +43,8 @@ without needing a full P0 backend connection.`,
 	cmd.Flags().StringVar(&action, "action", "grant", "Action to perform (grant or revoke)")
 	cmd.Flags().StringVar(&requestID, "request-id", "", "Request ID for tracking (auto-generated if empty)")
 	cmd.Flags().StringVar(&publicKey, "public-key", "", "SSH public key for authorized keys operations")
+	cmd.Flags().StringVar(&startTime, "start-time", "", "Start time filter (unix timestamp or ISO 8601)")
+	cmd.Flags().StringVar(&endTime, "end-time", "", "End time filter (unix timestamp or ISO 8601)")
 	cmd.Flags().BoolVar(&sudo, "sudo", false, "Grant sudo access")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Log commands but don't execute them (safe testing mode)")
 
@@ -52,7 +56,7 @@ without needing a full P0 backend connection.`,
 
 func runCommand(
 	verbose bool, configPath string,
-	command, userName, action, requestID, publicKey string, sudo, dryRun bool,
+	command, userName, action, requestID, publicKey, startTime, endTime string, sudo, dryRun bool,
 ) error {
 	logger := logrus.New()
 	if verbose {
@@ -73,17 +77,19 @@ func runCommand(
 		"sudo":       sudo,
 		"dry_run":    dryRun,
 		"has_key":    publicKey != "",
-	}).Info("🧪 Executing provisioning command")
+	}).Info("Executing provisioning command")
 
 	req := scripts.ProvisioningRequest{
 		UserName:  userName,
 		Action:    action,
 		RequestID: requestID,
 		PublicKey: publicKey,
+		StartTime: startTime,
+		EndTime:   endTime,
 		Sudo:      sudo,
 	}
 
-	fmt.Println("📋 Provisioning Request:")
+	fmt.Println("Provisioning Request:")
 	fmt.Println("=" + strings.Repeat("=", 30))
 	requestJSON, _ := json.MarshalIndent(req, "", "  ")
 	fmt.Println(string(requestJSON))
@@ -91,18 +97,18 @@ func runCommand(
 
 	result := scripts.ExecuteScript(command, req, dryRun, logger)
 
-	fmt.Println("\n📊 Execution Result:")
+	fmt.Println("\nExecution Result:")
 	fmt.Println("=" + strings.Repeat("=", 25))
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(resultJSON))
 
 	if result.Success {
-		fmt.Println("\n✅ Command executed successfully!")
+		fmt.Println("\nCommand executed successfully!")
 		if dryRun {
-			fmt.Println("🔍 DRY-RUN: No actual changes were made to the system")
+			fmt.Println("DRY-RUN: No actual changes were made to the system")
 		}
 	} else {
-		fmt.Println("\n❌ Command execution failed!")
+		fmt.Println("\nCommand execution failed!")
 		fmt.Printf("Error: %s\n", result.Error)
 		return fmt.Errorf("command execution failed: %s", result.Error)
 	}

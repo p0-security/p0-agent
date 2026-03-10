@@ -199,7 +199,7 @@ func ExecuteScript(command string, data interface{}, dryRun bool, logger *logrus
 			"username": req.UserName,
 			"action":   req.Action,
 		}).Info("🔍 DRY-RUN: Would execute provisioning script (no actual changes made)")
-		
+
 		return ProvisioningResult{
 			Success: true,
 			Message: fmt.Sprintf("DRY-RUN: Would execute %s for user %s", command, req.UserName),
@@ -209,6 +209,8 @@ func ExecuteScript(command string, data interface{}, dryRun bool, logger *logrus
 	switch Command(command) {
 	case CommandRunAudit:
 		return RunAudit(logger)
+	case CommandCollectSudoshRecordings:
+		return CollectSudoshRecordings(req, logger)
 	case CommandProvisionUser:
 		return ProvisionUser(req, logger)
 	case CommandProvisionAuthorizedKeys:

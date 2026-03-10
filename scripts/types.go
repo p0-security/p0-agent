@@ -1,12 +1,14 @@
 package scripts
 
 type ProvisioningRequest struct {
-	UserName     string `json:"userName"`
-	Action       string `json:"action"`
-	RequestID    string `json:"requestId"`
-	PublicKey    string `json:"publicKey,omitempty"`
-	CAPublicKey  string `json:"caPublicKey,omitempty"`
-	Sudo         bool   `json:"sudo,omitempty"`
+	UserName    string `json:"userName"`
+	Action      string `json:"action"`
+	RequestID   string `json:"requestId"`
+	StartTime   string `json:"startTime,omitempty"`
+	EndTime     string `json:"endTime,omitempty"`
+	PublicKey   string `json:"publicKey,omitempty"`
+	CAPublicKey string `json:"caPublicKey,omitempty"`
+	Sudo        bool   `json:"sudo,omitempty"`
 }
 
 type ProvisioningResult struct {
@@ -25,4 +27,5 @@ const (
 	CommandProvisionSudo           Command = "provisionSudo"
 	CommandProvisionSession        Command = "provisionSession"
 	CommandRunAudit                Command = "runAudit"
+	CommandCollectSudoshRecordings Command = "collectSudoshRecordings"
 )
