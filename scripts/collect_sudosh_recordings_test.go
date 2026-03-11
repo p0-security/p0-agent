@@ -90,6 +90,86 @@ func TestAppendAuditEventsToSudoshExport(t *testing.T) {
 	}
 }
 
+func TestAppendAuditEventsToSudoshExportSkipsSyntheticLifecycleWithoutCommands(t *testing.T) {
+	t.Parallel()
+
+	sessionID := "alice-alice-script-1710000000-testsession"
+	scriptOutput := strings.Join([]string{
+		"\u001b]0;alice@host: ~\u0007alice@host:~$",
+		"\u001b]0;alice@host: ~\u0007alice@host:~$",
+	}, "\r\n")
+	timingOutput := "1.0 10\n"
+
+	exportPayload := strings.Join([]string{
+		"=== Exporting sudosh session recordings ===",
+		"=== EXPORT_START ===",
+		"SESSIONS_COUNT: 1",
+		"",
+		"=== SESSION_START ===",
+		"SESSION_ID: " + sessionID,
+		"SCRIPT_BASE64:",
+		base64.StdEncoding.EncodeToString([]byte(scriptOutput)),
+		"TIMING_BASE64:",
+		base64.StdEncoding.EncodeToString([]byte(timingOutput)),
+		"=== SESSION_END ===",
+		"",
+		"=== EXPORT_END ===",
+	}, "\n")
+
+	augmentedOutput, err := appendAuditEventsToSudoshExport(exportPayload, "alice")
+	if err != nil {
+		t.Fatalf("appendAuditEventsToSudoshExport returned error: %v", err)
+	}
+
+	eventsJSON := lineAfterMarker(t, augmentedOutput, "AUDIT_EVENTS_JSON:")
+
+	var events []auditEventRow
+	if err := json.Unmarshal([]byte(eventsJSON), &events); err != nil {
+		t.Fatalf("failed to unmarshal audit events JSON: %v", err)
+	}
+
+	if len(events) != 0 {
+		t.Fatalf("expected no audit events, got %#v", events)
+	}
+}
+
+func TestExtractCommandLinesSanitizesPromptNoise(t *testing.T) {
+	t.Parallel()
+
+	scriptOutput := strings.Join([]string{
+		"\u001b]0;aaron-keisler_p0@ip-172-31-31-167: ~\u0007aaron-keisler_p0@ip-172-31-31-167:~$",
+		"\u001b]0;aaron-keisler_p0@ip-172-31-31-167: ~\u0007aaron-keisler_p0@ip-172-31-31-167:~$ echo hello",
+		"root@ip-172-31-31-167:/#   df -h",
+		"\u001b[01;36mbin\u001b[0m",
+	}, "\n")
+
+	commands := extractCommandLines(scriptOutput)
+
+	expected := []string{"echo hello", "df -h"}
+	if len(commands) != len(expected) {
+		t.Fatalf("expected %d commands, got %#v", len(expected), commands)
+	}
+
+	for index, command := range expected {
+		if commands[index] != command {
+			t.Fatalf("expected command %d to be %q, got %q", index, command, commands[index])
+		}
+	}
+}
+
+func TestNormalizeTimestampForShellAcceptsFractionalISO8601(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := normalizeTimestampForShell("2026-03-11T17:41:21.035Z")
+	if err != nil {
+		t.Fatalf("normalizeTimestampForShell returned error: %v", err)
+	}
+
+	if normalized != "1773250881" {
+		t.Fatalf("expected normalized timestamp to be %q, got %q", "1773250881", normalized)
+	}
+}
+
 func lineAfterMarker(t *testing.T, body, marker string) string {
 	t.Helper()
 

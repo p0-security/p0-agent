@@ -17,14 +17,8 @@ import (
 )
 
 var validTimestampPattern = regexp.MustCompile(`^[0-9]+$`)
-var validISO8601Pattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`)
-
-func isValidTimestamp(ts string) bool {
-	if ts == "" {
-		return true
-	}
-	return validTimestampPattern.MatchString(ts) || validISO8601Pattern.MatchString(ts)
-}
+var oscSequencePattern = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
+var ansiEscapePattern = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
 
 const (
 	recordingsCollectionTimeout = 2 * time.Minute
@@ -195,14 +189,17 @@ func CollectSudoshRecordings(req ProvisioningRequest, logger *logrus.Logger) Pro
 		}
 	}
 
+	normalizedStartTime, _ := normalizeTimestampForShell(req.StartTime)
+	normalizedEndTime, _ := normalizeTimestampForShell(req.EndTime)
+
 	ctx, cancel := context.WithTimeout(context.Background(), recordingsCollectionTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", collectSudoshRecordingsScript)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("USERNAME=%s", req.UserName),
-		fmt.Sprintf("START_TIME=%s", req.StartTime),
-		fmt.Sprintf("END_TIME=%s", req.EndTime),
+		fmt.Sprintf("START_TIME=%s", normalizedStartTime),
+		fmt.Sprintf("END_TIME=%s", normalizedEndTime),
 	)
 
 	var stdout, stderr bytes.Buffer
@@ -338,6 +335,11 @@ func deriveAuditEvents(session sudoshExportSession, username string) ([]auditEve
 		return nil, fmt.Errorf("parse start time for %s: %w", session.sessionID, err)
 	}
 	duration := parseSessionDuration(string(timingBytes))
+	commandLines := extractCommandLines(string(scriptBytes))
+	if len(commandLines) == 0 {
+		return []auditEventRow{}, nil
+	}
+
 	endTime := startTime.Add(duration)
 
 	var events []auditEventRow
@@ -357,7 +359,6 @@ func deriveAuditEvents(session sudoshExportSession, username string) ([]auditEve
 		},
 	})
 
-	commandLines := extractCommandLines(string(scriptBytes))
 	commandCount := len(commandLines)
 	for index, commandLine := range commandLines {
 		commandTimestamp := startTime
@@ -405,6 +406,30 @@ func deriveAuditEvents(session sudoshExportSession, username string) ([]auditEve
 	return events, nil
 }
 
+func isValidTimestamp(ts string) bool {
+	if ts == "" {
+		return true
+	}
+	_, err := normalizeTimestampForShell(ts)
+	return err == nil
+}
+
+func normalizeTimestampForShell(ts string) (string, error) {
+	if ts == "" {
+		return "", nil
+	}
+	if validTimestampPattern.MatchString(ts) {
+		return ts, nil
+	}
+
+	parsed, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.FormatInt(parsed.Unix(), 10), nil
+}
+
 func parseSessionStartTime(sessionID string) (time.Time, error) {
 	marker := strings.LastIndex(sessionID, "-script-")
 	if marker == -1 {
@@ -443,26 +468,84 @@ func extractCommandLines(scriptOutput string) []string {
 	var commands []string
 
 	for _, line := range strings.Split(strings.ReplaceAll(scriptOutput, "\r", ""), "\n") {
-		cleanedLine := strings.TrimSpace(line)
-		if cleanedLine == "" {
-			continue
-		}
-
-		if marker := strings.LastIndex(cleanedLine, "$ "); marker != -1 {
-			command := strings.TrimSpace(cleanedLine[marker+2:])
-			if command != "" {
-				commands = append(commands, command)
-			}
-			continue
-		}
-
-		if marker := strings.LastIndex(cleanedLine, "# "); marker != -1 {
-			command := strings.TrimSpace(cleanedLine[marker+2:])
-			if command != "" {
-				commands = append(commands, command)
-			}
+		command, ok := extractCommandLine(line)
+		if ok {
+			commands = append(commands, command)
 		}
 	}
 
 	return commands
+}
+
+func extractCommandLine(line string) (string, bool) {
+	cleanedLine := sanitizeTerminalLine(line)
+	if cleanedLine == "" {
+		return "", false
+	}
+
+	for _, marker := range []string{"$ ", "# "} {
+		promptIndex := strings.LastIndex(cleanedLine, marker)
+		if promptIndex == -1 {
+			continue
+		}
+
+		command := strings.TrimSpace(cleanedLine[promptIndex+len(marker):])
+		if command == "" {
+			return "", false
+		}
+
+		command = strings.Join(strings.Fields(command), " ")
+		if command == "" || looksLikePrompt(command) {
+			return "", false
+		}
+
+		return command, true
+	}
+
+	return "", false
+}
+
+func sanitizeTerminalLine(line string) string {
+	line = oscSequencePattern.ReplaceAllString(line, "")
+	line = ansiEscapePattern.ReplaceAllString(line, "")
+	line = collapseBackspaces(line)
+	line = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			if r == ' ' || r == '\t' {
+				return ' '
+			}
+			return -1
+		}
+		return r
+	}, line)
+	return strings.TrimSpace(line)
+}
+
+func collapseBackspaces(line string) string {
+	buf := make([]rune, 0, len(line))
+	for _, r := range line {
+		if r == '\b' {
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+			}
+			continue
+		}
+		buf = append(buf, r)
+	}
+	return string(buf)
+}
+
+func looksLikePrompt(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return true
+	}
+
+	for _, suffix := range []string{"$", "#"} {
+		if strings.HasSuffix(trimmed, suffix) && strings.Contains(trimmed, "@") {
+			return true
+		}
+	}
+
+	return false
 }
