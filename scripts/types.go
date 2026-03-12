@@ -28,4 +28,5 @@ const (
 	CommandProvisionSession        Command = "provisionSession"
 	CommandRunAudit                Command = "runAudit"
 	CommandCollectSudoshRecordings Command = "collectSudoshRecordings"
+	CommandListUsers               Command = "listUsers"
 )
