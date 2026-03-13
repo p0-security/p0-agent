@@ -15,7 +15,7 @@ func ProvisionSudo(req ProvisioningRequest, logger *logrus.Logger) ProvisioningR
 		"runAsUser":  req.RunAsUser,
 	}).Info("⚡ Provisioning sudo access")
 
-	if !req.Sudo && req.RunAsUser != "" && req.Action == "grant" {
+	if !req.Sudo && req.RunAsUser == "" && req.Action == "grant" {
 		return ProvisioningResult{
 			Success: true,
 			Message: "Sudo access not requested, skipping sudo provisioning",
