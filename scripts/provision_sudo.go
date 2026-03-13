@@ -22,7 +22,11 @@ func ProvisionSudo(req ProvisioningRequest, logger *logrus.Logger) ProvisioningR
 	}
 
 	sudoersFile := "/etc/sudoers-p0"
-	sudoRule := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL", req.UserName)
+	runAs := "ALL"
+	if req.RunAsUser != "" {
+		runAs = req.RunAsUser
+	}
+	sudoRule := fmt.Sprintf("%s ALL=(%s) NOPASSWD: ALL", req.UserName, runAs)
 
 	switch req.Action {
 	case "grant":

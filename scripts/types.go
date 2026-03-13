@@ -9,6 +9,7 @@ type ProvisioningRequest struct {
 	PublicKey   string `json:"publicKey,omitempty"`
 	CAPublicKey string `json:"caPublicKey,omitempty"`
 	Sudo        bool   `json:"sudo,omitempty"`
+	RunAsUser   string `json:"runAsUser,omitempty"`
 }
 
 type ProvisioningResult struct {
